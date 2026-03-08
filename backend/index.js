@@ -10,37 +10,73 @@ require('dotenv').config();
 
 const app = express();
 
-// Global Middleware
-app.use(helmet()); // Security headers
-app.use(compression()); // Compress responses
-app.use(cors({
-    origin:process.env.FRONTEND_URL, 
-    credentials:true
-})); // Enable CORS
-app.use(express.json()); // Parse JSON bodies
-app.use(logger); // Request logging
+// ✅ FIXED CORS - Multiple origins allowed
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://127.0.0.1:5173',
+    process.env.FRONTEND_URL
+].filter(Boolean); // Remove null/undefined
 
-// Routes
+console.log('🔒 Allowed origins:', allowedOrigins);
+
+app.use(cors({
+    origin: function(origin, callback) {
+        // Allow requests with no origin (Postman, curl)
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.log('❌ Blocked origin:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true
+}));
+
+// Global Middleware
+app.use(helmet());
+app.use(compression());
+app.use(express.json());
+app.use(logger);
+
+// ✅ Routes - /api/products prefix ke saath
 app.use('/api/products', productRoutes);
 
-// Health check (no middleware)
+// Health check
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'OK', 
         message: 'Server is running',
+        cors: allowedOrigins,
         timestamp: new Date().toISOString() 
     });
 });
 
-// 404 handler - routes not found
+// ✅ Root route - API info
+app.get('/', (req, res) => {
+    res.json({
+        message: 'DataMart API Server',
+        endpoints: {
+            products: '/api/products',
+            categories: '/api/products/categories',
+            brands: '/api/products/brands',
+            health: '/health'
+        }
+    });
+});
+
+// 404 handler
 app.use(notFound);
 
-// Error handler - must be last
+// Error handler
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
     console.log(`📊 API: http://localhost:${PORT}/api/products`);
-    console.log(`📝 Logger enabled - check console for requests`);
+    console.log(`🔒 CORS allowed origins:`, allowedOrigins);
 });
