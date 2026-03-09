@@ -3,188 +3,124 @@ const supabase = require('../utils/database');
 class ProductRepository {
     async findAll({ page = 1, limit = 20, search, searchType = 'all', category, minPrice, maxPrice, sortBy = 'created_at', sortOrder = 'desc' }) {
         try {
-            console.log('🔍 Repository filters:', { page, limit, search, searchType, category, minPrice, maxPrice, sortBy, sortOrder });
+            console.log('🔍 Repository filters:', { page, limit, search, searchType, category, minPrice, maxPrice });
             
+            // ✅ SIMPLE QUERY - No complex joins
             let query = supabase
                 .from('products')
                 .select(`
                     id,
                     name,
-                    description,
                     price,
                     brand,
-                    stock_quantity,
                     rating,
                     image_url,
                     created_at,
-                    category_id,
-                    categories!inner (
-                        id,
-                        name
-                    )
+                    category_id
                 `, { count: 'exact' });
 
-            // ✅ SEARCH HANDLING
+            // ✅ SEARCH HANDLING - Simplified
             if (search && search.trim() !== '') {
-                console.log('🔎 Applying search with type:', searchType);
-                
                 const cleanSearch = search.trim();
                 
                 if (searchType === 'name') {
-                    // Search only in product name
                     query = query.ilike('name', `%${cleanSearch}%`);
                 }
+                else if (searchType === 'brand') {
+                    query = query.ilike('brand', `%${cleanSearch}%`);
+                }
                 else if (searchType === 'category') {
-                    // ✅ FIXED: Category search - get category IDs first
-                    const { data: matchingCategories } = await supabase
+                    // First get category IDs
+                    const { data: cats } = await supabase
                         .from('categories')
                         .select('id')
                         .ilike('name', `%${cleanSearch}%`);
                     
-                    if (matchingCategories && matchingCategories.length > 0) {
-                        const categoryIds = matchingCategories.map(c => c.id);
-                        console.log('Found category IDs:', categoryIds);
-                        query = query.in('category_id', categoryIds);
+                    if (cats && cats.length > 0) {
+                        const catIds = cats.map(c => c.id);
+                        query = query.in('category_id', catIds);
                     } else {
-                        console.log('No matching categories found');
                         return {
                             data: [],
-                            pagination: {
-                                page: parseInt(page),
-                                limit: parseInt(limit),
-                                total: 0,
-                                totalPages: 0
-                            }
+                            pagination: { page, limit, total: 0, totalPages: 0 }
                         };
                     }
                 }
-                else if (searchType === 'brand') {
-                    // Search in brand
-                    query = query.ilike('brand', `%${cleanSearch}%`);
-                }
                 else {
-                    // ✅ FIXED: ALL FIELDS SEARCH
-                    console.log('Searching in all fields for:', cleanSearch);
-                    
-                    // Search in name and brand
+                    // All fields - search in name and brand only
                     query = query.or(`name.ilike.%${cleanSearch}%,brand.ilike.%${cleanSearch}%`);
-                    
-                    // Also get matching category IDs
-                    const { data: matchingCategories } = await supabase
-                        .from('categories')
-                        .select('id')
-                        .ilike('name', `%${cleanSearch}%`);
-                    
-                    if (matchingCategories && matchingCategories.length > 0) {
-                        const categoryIds = matchingCategories.map(c => c.id);
-                        console.log('Also searching in categories:', categoryIds);
-                        
-                        // For Supabase, we need to handle this differently
-                        // Let's get all products that match name/brand OR category
-                        // We'll do this in two steps
-                        
-                        // First get products matching name/brand
-                        const { data: nameBrandMatches } = await supabase
-                            .from('products')
-                            .select('id')
-                            .or(`name.ilike.%${cleanSearch}%,brand.ilike.%${cleanSearch}%`);
-                        
-                        const nameBrandIds = (nameBrandMatches || []).map(p => p.id);
-                        
-                        // Then get products matching category
-                        const { data: categoryMatches } = await supabase
-                            .from('products')
-                            .select('id')
-                            .in('category_id', categoryIds);
-                        
-                        const categoryMatchIds = (categoryMatches || []).map(p => p.id);
-                        
-                        // Combine all matching IDs
-                        const allMatchingIds = [...new Set([...nameBrandIds, ...categoryMatchIds])];
-                        
-                        console.log(`Found ${allMatchingIds.length} matching product IDs`);
-                        
-                        if (allMatchingIds.length > 0) {
-                            query = query.in('id', allMatchingIds);
-                        } else {
-                            return {
-                                data: [],
-                                pagination: {
-                                    page: parseInt(page),
-                                    limit: parseInt(limit),
-                                    total: 0,
-                                    totalPages: 0
-                                }
-                            };
-                        }
-                    }
                 }
             }
-            
-            // ✅ CATEGORY FILTER (from dropdown)
+
+            // ✅ CATEGORY FILTER
             if (category && category.trim() !== '') {
-                console.log('📁 Applying category filter:', category);
-                
-                const { data: categoryData, error: categoryError } = await supabase
+                const { data: cat } = await supabase
                     .from('categories')
                     .select('id')
-                    .ilike('name', `%${category}%`)
-                    .maybeSingle();
+                    .eq('name', category.trim())
+                    .single();
                 
-                if (categoryError) {
-                    console.error('Category fetch error:', categoryError);
-                }
-                
-                if (categoryData) {
-                    console.log('Found category ID:', categoryData.id);
-                    query = query.eq('category_id', categoryData.id);
+                if (cat) {
+                    query = query.eq('category_id', cat.id);
                 }
             }
-            
-            // ✅ PRICE RANGE
-            if (minPrice && !isNaN(minPrice) && minPrice !== '') {
+
+            // ✅ PRICE FILTERS
+            if (minPrice && !isNaN(minPrice)) {
                 query = query.gte('price', parseFloat(minPrice));
             }
-            
-            if (maxPrice && !isNaN(maxPrice) && maxPrice !== '') {
+            if (maxPrice && !isNaN(maxPrice)) {
                 query = query.lte('price', parseFloat(maxPrice));
             }
 
-            // Pagination
-            const from = (page - 1) * limit;
-            const to = from + limit - 1;
-
-            // Sorting
+            // ✅ SORTING
             if (sortBy === 'price' || sortBy === 'rating' || sortBy === 'name') {
                 query = query.order(sortBy, { ascending: sortOrder === 'asc' });
             } else {
                 query = query.order('created_at', { ascending: false });
             }
 
-            const { data, error, count } = await query
-                .range(from, to);
+            // ✅ PAGINATION
+            const from = (page - 1) * limit;
+            const to = from + limit - 1;
+            
+            const { data, error, count } = await query.range(from, to);
 
             if (error) {
                 console.error('❌ Supabase error:', error);
                 throw error;
             }
 
-            // Transform data
+            // ✅ GET CATEGORY NAMES SEPARATELY
+            const categoryIds = [...new Set(data.map(item => item.category_id).filter(Boolean))];
+            
+            let categoryMap = {};
+            if (categoryIds.length > 0) {
+                const { data: categories } = await supabase
+                    .from('categories')
+                    .select('id, name')
+                    .in('id', categoryIds);
+                
+                categoryMap = (categories || []).reduce((acc, cat) => {
+                    acc[cat.id] = cat.name;
+                    return acc;
+                }, {});
+            }
+
+            // ✅ TRANSFORM DATA
             const transformedData = (data || []).map(item => ({
                 id: item.id,
                 name: item.name,
-                description: item.description,
                 price: item.price,
                 brand: item.brand,
-                stock_quantity: item.stock_quantity,
                 rating: item.rating,
                 image_url: item.image_url,
                 created_at: item.created_at,
                 category_id: item.category_id,
-                category: item.categories?.name || 'Uncategorized'
+                category: categoryMap[item.category_id] || 'Uncategorized'
             }));
 
-            console.log(`✅ Found ${transformedData.length} products out of ${count || 0}`);
+            console.log(`✅ Found ${transformedData.length} products`);
             
             return {
                 data: transformedData,
@@ -205,21 +141,21 @@ class ProductRepository {
         try {
             const { data, error } = await supabase
                 .from('products')
-                .select(`
-                    *,
-                    categories (
-                        id,
-                        name,
-                        description
-                    )
-                `)
+                .select('*')
                 .eq('id', id)
                 .single();
 
             if (error) throw error;
             
-            if (data) {
-                data.category = data.categories?.name || 'Uncategorized';
+            // Get category name separately
+            if (data && data.category_id) {
+                const { data: category } = await supabase
+                    .from('categories')
+                    .select('name')
+                    .eq('id', data.category_id)
+                    .single();
+                
+                data.category = category?.name || 'Uncategorized';
             }
             
             return data;
@@ -233,7 +169,7 @@ class ProductRepository {
         try {
             const { data, error } = await supabase
                 .from('categories')
-                .select('id, name, description')
+                .select('id, name')
                 .order('name');
 
             if (error) throw error;
